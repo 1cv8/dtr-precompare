@@ -1,0 +1,10 @@
+[package]
+name = "dtr-precompare"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+walkdir = "2"
+regex = "1"
+rayon = "1.9"
+crossbeam-channel = "0.5"
