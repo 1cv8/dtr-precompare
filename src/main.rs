@@ -1,17 +1,28 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use once_cell::sync::Lazy;
 use regex::Regex;
 use walkdir::WalkDir;
-use rayon::iter::ParallelBridge;
-use rayon::prelude::ParallelIterator;
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::time::{Instant};
 
 use std::env;
 use std::process;
+
+//static entity_id_pattern = Regex::new(r#""EntityId":\s*"([0-9a-f-]+)""#).unwrap();
+static ENTITY_ID_PATTERN: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#""EntityId":\s*"([0-9a-f-]+)""#).unwrap()
+});
+
+//let types_pattern = Regex::new(r#""RouteSystemDataTypes":\s*\[([0-9a-f-\",\r\n\t[:space:]]+)\]"#).unwrap();
+static TYPES_PATTERN: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#""RouteSystemDataTypes":\s*\[([0-9a-f-\",\r\n\t[:space:]]+)\]"#).unwrap()
+});
+
 
 fn main() -> io::Result<()> {
     let start_time = Instant::now();
@@ -55,21 +66,19 @@ fn main() -> io::Result<()> {
          r#""EntityId": "00000000-0000-0000-0000-000000000000""#),
         (Regex::new(r#""Version":\s*[0-9]+,"#).unwrap(), 
          r#""Version": 0,"#),
-        (Regex::new(r#""X":\s*[0-9]+"#).unwrap(), 
+        (Regex::new(r#""X":\s*[-0-9]+"#).unwrap(), 
          r#""X": 0"#),
-        (Regex::new(r#""Y":\s*[0-9]+"#).unwrap(), 
+        (Regex::new(r#""Y":\s*[-0-9]+"#).unwrap(), 
          r#""Y": 0"#),
     ]);
 
+    let files = collect_json_files(&target_dir)?;
+
     // Используем Rayon для параллельной обработки файлов
-    let ids: HashMap<String, String> = WalkDir::new(&target_dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
-        .par_bridge() // Превращаем в параллельный итератор
-        .map(|entry| {
-            let path = entry.path();
+    let ids: HashMap<String, String> = 
+    files.par_iter()
+        .map(|path| {
+            //let path = entry.path();
             let patterns = Arc::clone(&patterns);
             
             let res: (String, String) = match depersonalize_file(path, &*patterns) {
@@ -85,15 +94,8 @@ fn main() -> io::Result<()> {
 
     
     // Шаг 2 заменяем ID в теле на имена файлов
-    WalkDir::new(&target_dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
-        .par_bridge() // Превращаем в параллельный итератор
-        .for_each(|entry| {
-            let path = entry.path();
-            
+    files.par_iter()
+        .for_each(|path| {
             if let Err(e) = change_ids_in_file(path, &ids) {
                 eprintln!("Ошибка обработки файла {}: {}", path.display(), e);
             };
@@ -105,14 +107,24 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
+fn collect_json_files(dir: &str) -> io::Result<Vec<PathBuf>> {
+    Ok(WalkDir::new(dir)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
+        .map(|e| e.into_path())
+        .collect())
+}
+
 fn depersonalize_file(path: &Path, patterns: &[(Regex, &str)]) -> io::Result<(String, String)> {
     // Читаем файл
     let content = fs::read_to_string(path)?;
     
     // Ищем все FolderId до замены
-    let entity_id_pattern = Regex::new(r#""EntityId":\s*"([0-9a-f-]+)""#).unwrap();
+    //
     let mut entity_id = String::new();
-    let capt_rez = entity_id_pattern.captures(&content);
+    let capt_rez = ENTITY_ID_PATTERN.captures(&content);
     match capt_rez {
         Some(capt_value) => {
             let capt_1_rez = capt_value.get(1); 
@@ -168,7 +180,7 @@ fn dtr_obj_name(path: &Path) -> io::Result<String> {
     if p_name == "" {
         rez = f_name;
     }else {
-        rez = format!("{}.{}", p_name, f_name);
+        rez = format!("{}.{}", p_name, f_name_wo_ext);
     };
     
     Ok(rez)
@@ -179,14 +191,12 @@ fn change_ids_in_file(path: &Path, ids: &HashMap<String, String>) -> io::Result<
     // Читаем файл
     let content = fs::read_to_string(path)?;
 
-    //let types_pattern = Regex::new(r#""RouteSystemDataTypes":\s*\[([\s\S]+)\]"#).unwrap();
-    //let types_pattern = Regex::new(r#""RouteSystemDataTypes":\s*\[([^\[\]{};]+)\]"#).unwrap();
-    let types_pattern = Regex::new(r#""RouteSystemDataTypes":\s*\[([0-9a-f-\",\r\n\t[:space:]]+)\]"#).unwrap();
+    //let types_pattern = Regex::new(r#""RouteSystemDataTypes":\s*\[([0-9a-f-\",\r\n\t[:space:]]+)\]"#).unwrap();
 
     let mut ch_names: Vec<String> = Vec::new();
     let orig_text: String;
 
-    let capt_rez = types_pattern.captures(&content);
+    let capt_rez = TYPES_PATTERN.captures(&content);
     match capt_rez {
         Some(capt_value) => {
             let capt_1_rez = capt_value.get(1); 
