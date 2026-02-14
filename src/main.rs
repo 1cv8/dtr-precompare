@@ -7,20 +7,21 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use walkdir::WalkDir;
 use rayon::prelude::*;
-use std::collections::HashMap;
 use std::time::{Instant};
 
 use std::env;
 use std::process;
 
-//static entity_id_pattern = Regex::new(r#""EntityId":\s*"([0-9a-f-]+)""#).unwrap();
+use serde_json::Value;
+
+use dashmap::DashMap;
+//use crossbeam::queue::SegQueue;
+
+type IdMap = DashMap<String, String>;
+
+
 static ENTITY_ID_PATTERN: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#""EntityId":\s*"([0-9a-f-]+)""#).unwrap()
-});
-
-//let types_pattern = Regex::new(r#""RouteSystemDataTypes":\s*\[([0-9a-f-\",\r\n\t[:space:]]+)\]"#).unwrap();
-static TYPES_PATTERN: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#""RouteSystemDataTypes":\s*\[([0-9a-f-\",\r\n\t[:space:]]+)\]"#).unwrap()
 });
 
 
@@ -74,29 +75,21 @@ fn main() -> io::Result<()> {
 
     let files = collect_json_files(&target_dir)?;
 
-    // Используем Rayon для параллельной обработки файлов
-    let ids: HashMap<String, String> = 
-    files.par_iter()
-        .map(|path| {
-            //let path = entry.path();
-            let patterns = Arc::clone(&patterns);
-            
-            let res: (String, String) = match depersonalize_file(path, &*patterns) {
-                Ok(result) => result,
-                Err(e) => {
-                    eprintln!("Ошибка обработки файла {}: {}", path.display(), e);
-                    (String::from(""), String::from(""))
-                },
-            };
-            return res
-        })
-        .collect();
+    let id_map = IdMap::new();
 
+    // === Phase 1: Depersonalize + collect IDs ===
+    files.par_iter()
+        .for_each(|path| {
+        let patterns = Arc::clone(&patterns);
+        if let Err(e) = depersonalize_file(path, &*patterns, &id_map) {
+            eprintln!("Error processing {:?}: {}", path, e);
+        }
+    });
     
     // Шаг 2 заменяем ID в теле на имена файлов
     files.par_iter()
         .for_each(|path| {
-            if let Err(e) = change_ids_in_file(path, &ids) {
+            if let Err(e) = replace_ids(path, &id_map) {
                 eprintln!("Ошибка обработки файла {}: {}", path.display(), e);
             };
         });
@@ -117,26 +110,28 @@ fn collect_json_files(dir: &str) -> io::Result<Vec<PathBuf>> {
         .collect())
 }
 
-fn depersonalize_file(path: &Path, patterns: &[(Regex, &str)]) -> io::Result<(String, String)> {
+fn depersonalize_file(path: &Path, patterns: &[(Regex, &str)], id_map: &IdMap) -> io::Result<()> {
     // Читаем файл
     let content = fs::read_to_string(path)?;
     
-    // Ищем все FolderId до замены
-    //
-    let mut entity_id = String::new();
+    // Ищем все EntityId до замены
     let capt_rez = ENTITY_ID_PATTERN.captures(&content);
-    match capt_rez {
+    let entity_id:String = match capt_rez {
         Some(capt_value) => {
             let capt_1_rez = capt_value.get(1); 
             match capt_1_rez {
                 Some(capt_1_value) => {
-                    entity_id = capt_1_value.as_str().to_string().clone();
+                    capt_1_value.as_str().to_string().clone()
                 },
-                None => {}
-            };
+                None => {"".to_string()}
+            }
         },
-        None => {}
+        None => {"".to_string()}
     };
+
+    let new_name:String = build_object_name(path)?;
+
+    id_map.insert(entity_id.clone(), new_name.clone());
 
     // Применяем все замены
     let mut is_mdf: bool = false;
@@ -155,86 +150,74 @@ fn depersonalize_file(path: &Path, patterns: &[(Regex, &str)]) -> io::Result<(St
         fs::write(path, modified)?;
     };
 
-    Ok((entity_id, dtr_obj_name(path).unwrap()))
+    Ok(())
 }
 
-fn dtr_obj_name(path: &Path) -> io::Result<String> {
-    
-    let f_name: String = path.file_name().unwrap().display().to_string();
-    let f_name_wo_ext: String = path.file_stem().unwrap().display().to_string();
-    assert_ne!(f_name, "", "empty filename!");
-    
-    let mut p_name: String = String::new();
-    let parent = path.parent();
-    if parent != None {
-        p_name = parent.unwrap().file_name().unwrap().display().to_string();
-        if p_name == f_name_wo_ext {
-            let parent = parent.unwrap().parent();
-            if parent != None {
-                p_name = parent.unwrap().file_name().unwrap().display().to_string();
+fn build_object_name(path: &Path) -> io::Result<String> {
+    let file_stem = path
+        .file_stem()
+        .and_then(|p| p.to_str())
+        .unwrap_or("");
+
+    let parent = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|p| p.to_str())
+        .unwrap_or("");
+
+    let grandparent = path
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.file_name())
+        .and_then(|p| p.to_str())
+        .unwrap_or("");
+
+    if file_stem == parent {
+        return Ok(format!("{}.{}", grandparent, file_stem));
+    };
+
+    return Ok(format!("{}.{}", parent, file_stem))
+}
+
+fn replace_ids(path: &Path, id_map: &IdMap) -> io::Result<()> {
+    let content = fs::read_to_string(path)?;
+    let mut json: Value = serde_json::from_str(&content)?;
+
+    let mut modified = false;
+
+    if let Some(arr) = json
+        .get_mut("RouteSystemDataTypes")
+        .and_then(|v| v.as_array_mut())
+    {
+        let mut ch_names = Vec::with_capacity(arr.len());
+
+        for elem in arr.iter_mut() {
+            if let Some(old_id) = elem.as_str() {
+                if let Some(new_id) = id_map.get(old_id) {
+                    ch_names.push(new_id.clone());
+                    modified = true;
+                } else {
+                    ch_names.push(old_id.to_string());
+                };
             };
         };
-    };
 
-    let rez;
-    if p_name == "" {
-        rez = f_name;
-    }else {
-        rez = format!("{}.{}", p_name, f_name_wo_ext);
-    };
-    
-    Ok(rez)
+        if modified {
+            ch_names.sort_unstable();
 
-}
+            *arr = ch_names
+                .into_iter()
+                .map(Value::String)
+                .collect();
+        };
 
-fn change_ids_in_file(path: &Path, ids: &HashMap<String, String>) -> io::Result<()>{
-    // Читаем файл
-    let content = fs::read_to_string(path)?;
+    }
 
-    //let types_pattern = Regex::new(r#""RouteSystemDataTypes":\s*\[([0-9a-f-\",\r\n\t[:space:]]+)\]"#).unwrap();
+    if modified {
 
-    let mut ch_names: Vec<String> = Vec::new();
-    let orig_text: String;
-
-    let capt_rez = TYPES_PATTERN.captures(&content);
-    match capt_rez {
-        Some(capt_value) => {
-            let capt_1_rez = capt_value.get(1); 
-            match capt_1_rez {
-                Some(capt_1_value) => {
-                    orig_text = capt_1_value.as_str().to_string();
-                
-                    for elem_id_text in orig_text.split(',') {
-                        
-                        let start = elem_id_text.find('"').unwrap();
-                        let end = &elem_id_text[start + 1..].find('"').unwrap() + start + 1;
-                        let elem_id = &elem_id_text[(start+1)..=(end-1)];
-
-                        let el_name = ids.get(elem_id);
-                        let rez_name;
-                        if el_name == None {
-                            rez_name = elem_id.to_string();
-                        }else {
-                            rez_name = el_name.unwrap().clone();
-                        };
-                        
-                        ch_names.push(format!("{}{}{}",&elem_id_text[..=(start)], rez_name, "\""));
-        
-                    };
-                    
-                    // Datareon хранит в порядке добавления, для сравнения это вредно
-                    ch_names.sort();
-
-                    let change_text = ch_names.join(",") + "\r\n";
-                    let new_content = content.replace(&orig_text, &change_text);
-                    fs::write(path, new_content)?;
-
-                    },
-                None => {}
-            };
-        },
-        None => {}
-    };
+        let new_content = serde_json::to_string_pretty(&json)?;
+        fs::write(path, &new_content)?;
+    }
 
     Ok(())
 }
