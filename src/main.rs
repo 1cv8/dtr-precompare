@@ -14,11 +14,7 @@ use std::process;
 
 use serde_json::Value;
 
-use dashmap::DashMap;
-//use crossbeam::queue::SegQueue;
-
-type IdMap = DashMap<String, String>;
-
+use std::collections::HashMap;
 
 static ENTITY_ID_PATTERN: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#""EntityId":\s*"([0-9a-f-]+)""#).unwrap()
@@ -51,11 +47,38 @@ fn main() -> io::Result<()> {
         println!("processing in {}", target_dir);
         
     } else {
-        target_dir = String::from(".");
+        target_dir = ".".to_string();
         println!("processing in current dir");
     };
 
     println!("Start processing Datareon files");
+
+    
+    // Step 1: Поиск файлов для обработки
+    let files: Vec<PathBuf> = WalkDir::new(target_dir)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
+        .map(|e| e.into_path())
+        .collect();
+
+
+    // Step 2: Сбор ID для замены
+    let id_map: HashMap<String, String> = files
+    .par_iter()
+    .filter_map(|path| {
+        let content = fs::read_to_string(path).ok()?;
+
+        let entity_id = ENTITY_ID_PATTERN
+            .captures(&content)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().to_string())?;
+
+        let object_name = build_object_name(path).ok()?;
+
+        Some((entity_id, object_name))
+    }).collect();
 
     // Компилируем регулярные выражения один раз
     let patterns = Arc::new([
@@ -73,81 +96,45 @@ fn main() -> io::Result<()> {
          r#""Y": 0"#),
     ]);
 
-    let files = collect_json_files(&target_dir)?;
-
-    let id_map = IdMap::new();
-
-    // === Phase 1: Depersonalize + collect IDs ===
-    files.par_iter()
-        .for_each(|path| {
-        let patterns = Arc::clone(&patterns);
-        if let Err(e) = depersonalize_file(path, &*patterns, &id_map) {
-            eprintln!("Error processing {:?}: {}", path, e);
-        }
-    });
     
-    // Шаг 2 заменяем ID в теле на имена файлов
-    files.par_iter()
-        .for_each(|path| {
-            if let Err(e) = replace_ids(path, &id_map) {
-                eprintln!("Ошибка обработки файла {}: {}", path.display(), e);
-            };
-        });
+    // Step 2: Обработка файлов
+    files.par_iter().for_each(|path| {
+        let patterns = Arc::clone(&patterns);
+        if let Err(e) = chage_file_content(path, &*patterns, &id_map) {
+            eprintln!("Error processing {:?}: {}", path, e);
+        };
+    });
 
 
     println!("All is Done за {:.3} секунд", start_time.elapsed().as_secs_f64());
-
     Ok(())
 }
 
-fn collect_json_files(dir: &str) -> io::Result<Vec<PathBuf>> {
-    Ok(WalkDir::new(dir)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_file())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
-        .map(|e| e.into_path())
-        .collect())
-}
-
-fn depersonalize_file(path: &Path, patterns: &[(Regex, &str)], id_map: &IdMap) -> io::Result<()> {
-    // Читаем файл
+fn chage_file_content(path: &Path, patterns: &[(Regex, &str)], id_map: &HashMap<String, String>) -> io::Result<()> {
     let content = fs::read_to_string(path)?;
     
-    // Ищем все EntityId до замены
-    let capt_rez = ENTITY_ID_PATTERN.captures(&content);
-    let entity_id:String = match capt_rez {
-        Some(capt_value) => {
-            let capt_1_rez = capt_value.get(1); 
-            match capt_1_rez {
-                Some(capt_1_value) => {
-                    capt_1_value.as_str().to_string().clone()
-                },
-                None => {"".to_string()}
-            }
-        },
-        None => {"".to_string()}
-    };
-
-    let new_name:String = build_object_name(path)?;
-
-    id_map.insert(entity_id.clone(), new_name.clone());
-
-    // Применяем все замены
-    let mut is_mdf: bool = false;
-    let  mut modified = content;
+    // Применяем все замены patterns
+    let mut changed = false;
+    let  mut modified_content = content;
 
     for (regex, replacement) in patterns {
-        let new_text = regex.replace_all(&modified, *replacement).to_string();
-        if is_mdf == false && new_text != modified {
-            is_mdf = true;
+        let new_text = regex.replace_all(&modified_content, *replacement).to_string();
+        if changed == false && new_text != modified_content {
+            changed = true;
         };
-        modified = new_text;
+        modified_content = new_text;
     };
     
+    // JSON
+    let mut json: Value = serde_json::from_str(&modified_content)?;
+    if replace_ids(&mut json, &id_map)? {
+        changed = true;
+        modified_content = serde_json::to_string_pretty(&json)?;
+    };
+
     // Если были изменения, записываем файл
-    if is_mdf == true {
-        fs::write(path, modified)?;
+    if changed == true {
+        fs::write(path, modified_content)?;
     };
 
     Ok(())
@@ -179,18 +166,12 @@ fn build_object_name(path: &Path) -> io::Result<String> {
     return Ok(format!("{}.{}", parent, file_stem))
 }
 
-fn replace_ids(path: &Path, id_map: &IdMap) -> io::Result<()> {
-    let content = fs::read_to_string(path)?;
-    let mut json: Value = serde_json::from_str(&content)?;
-
+fn replace_ids(json: &mut Value, id_map: &HashMap<String, String>) -> io::Result<bool> {
     let mut modified = false;
 
-    if let Some(arr) = json
-        .get_mut("RouteSystemDataTypes")
-        .and_then(|v| v.as_array_mut())
+    if let Some(arr) = json.get_mut("RouteSystemDataTypes").and_then(|v| v.as_array_mut())
     {
         let mut ch_names = Vec::with_capacity(arr.len());
-
         for elem in arr.iter_mut() {
             if let Some(old_id) = elem.as_str() {
                 if let Some(new_id) = id_map.get(old_id) {
@@ -210,14 +191,7 @@ fn replace_ids(path: &Path, id_map: &IdMap) -> io::Result<()> {
                 .map(Value::String)
                 .collect();
         };
+    };
 
-    }
-
-    if modified {
-
-        let new_content = serde_json::to_string_pretty(&json)?;
-        fs::write(path, &new_content)?;
-    }
-
-    Ok(())
+    Ok(modified)
 }
