@@ -54,7 +54,7 @@ fn main() -> io::Result<()> {
         .into_iter()
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_file())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
         .map(|e| e.into_path())
         .collect();
 
@@ -97,7 +97,7 @@ fn main() -> io::Result<()> {
         (Regex::new(r#""Y":\s*[-0-9]+"#).unwrap(), r#""Y": 0"#),
         (
             Regex::new(r#""Key":\s*"[0-9a-f-]*""#).unwrap(),
-            r#""FolderId": "00000000-0000-0000-0000-000000000000""#,
+            r#""Key": "00000000-0000-0000-0000-000000000000""#,
         ),
     ]);
 
@@ -131,7 +131,7 @@ fn chage_file_content(
         let new_text = regex
             .replace_all(&modified_content, *replacement)
             .to_string();
-        if changed == false && new_text != modified_content {
+        if !changed && new_text != modified_content {
             changed = true;
         };
         modified_content = new_text;
@@ -139,13 +139,13 @@ fn chage_file_content(
 
     // JSON
     let mut json: Value = serde_json::from_str(&modified_content)?;
-    if replace_ids(&mut json, &id_map)? {
+    if replace_ids(&mut json, id_map)? {
         changed = true;
         modified_content = serde_json::to_string_pretty(&json)?;
     };
 
     // Если были изменения, записываем файл
-    if changed == true {
+    if changed {
         fs::write(path, modified_content)?;
     };
 
@@ -172,7 +172,7 @@ fn build_object_name(path: &Path) -> io::Result<String> {
         return Ok(format!("{}.{}", grandparent, file_stem));
     };
 
-    return Ok(format!("{}.{}", parent, file_stem));
+    Ok(format!("{}.{}", parent, file_stem))
 }
 
 fn replace_ids(json: &mut Value, id_map: &HashMap<String, String>) -> io::Result<bool> {
