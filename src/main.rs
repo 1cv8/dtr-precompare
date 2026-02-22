@@ -76,7 +76,7 @@ fn main() -> io::Result<()> {
         .collect();
 
     // Компилируем регулярные выражения один раз
-    let patterns = Arc::new([
+    let _patterns = Arc::new([
         (
             Regex::new(r#""FolderId":\s*"[0-9a-f-]*""#).unwrap(),
             r#""FolderId": "00000000-0000-0000-0000-000000000000""#,
@@ -105,10 +105,23 @@ fn main() -> io::Result<()> {
         ),
     ]);
 
+    // Оптимизация Комбинированное выражение
+    let combined_pattern = _patterns
+        .iter()
+        .enumerate()
+        .map(|(i, (re, _))| format!("(?P<p{}>{})", i, re.as_str()))
+        .collect::<Vec<_>>()
+        .join("|");
+    let combined_re = Regex::new(&combined_pattern).unwrap();
+
+    let patterns_reps: Vec<String> = _patterns
+        .iter()
+        .map(|(_, rep)| rep.to_string())
+        .collect::<Vec<_>>();
+
     // Step 3: Обработка файлов
     files.par_iter().for_each(|path| {
-        let patterns = Arc::clone(&patterns);
-        if let Err(e) = change_file_content(path, &*patterns, &id_map) {
+        if let Err(e) = change_file_content(path, &combined_re, &patterns_reps, &id_map) {
             eprintln!("Error processing {:?}: {}", path, e);
         };
     });
@@ -122,24 +135,31 @@ fn main() -> io::Result<()> {
 
 fn change_file_content(
     path: &Path,
-    patterns: &[(Regex, &str)],
+    combined_re: &Regex,
+    patterns_reps: &Vec<String>,
     id_map: &HashMap<String, String>,
 ) -> io::Result<()> {
     let content = fs::read_to_string(path)?;
 
-    // Применяем все замены patterns
     let mut changed = false;
     let mut modified_content = content;
 
-    for (regex, replacement) in patterns {
-        let new_text = regex
-            .replace_all(&modified_content, *replacement)
-            .to_string();
-        if !changed && new_text != modified_content {
-            changed = true;
-        };
-        modified_content = new_text;
-    }
+    // Применяем все замены patterns
+    let new_text = combined_re
+        .replace_all(&modified_content, |caps: &regex::Captures| {
+            for (i, rep_str) in patterns_reps.iter().enumerate() {
+                let name = format!("p{}", i);
+                if caps.name(&name).is_some() {
+                    return rep_str.clone();
+                }
+            }
+            String::new()
+        })
+        .to_string();
+    if !changed && new_text != modified_content {
+        changed = true;
+    };
+    modified_content = new_text;
 
     // JSON
     let mut json: Value = serde_json::from_str(&modified_content)?;
