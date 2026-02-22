@@ -1,13 +1,12 @@
-
+use once_cell::sync::Lazy;
+use rayon::prelude::*;
+use regex::Regex;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use once_cell::sync::Lazy;
-use regex::Regex;
+use std::time::Instant;
 use walkdir::WalkDir;
-use rayon::prelude::*;
-use std::time::{Instant};
 
 use std::env;
 use std::process;
@@ -16,22 +15,20 @@ use serde_json::Value;
 
 use std::collections::HashMap;
 
-static ENTITY_ID_PATTERN: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#""EntityId":\s*"([0-9a-f-]+)""#).unwrap()
-});
-
+static ENTITY_ID_PATTERN: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#""EntityId":\s*"([0-9a-f-]+)""#).unwrap());
 
 fn main() -> io::Result<()> {
     let start_time = Instant::now();
 
     // Получаем аргументы командной строки
     let args: Vec<String> = env::args().collect();
-    
+
     // Определяем целевой каталог
-    let target_dir:String;
+    let target_dir: String;
     if args.len() > 1 {
         target_dir = args[1].clone();
-        
+
         let path = Path::new(&target_dir);
         // Проверяем существование каталога
         if !path.exists() {
@@ -45,7 +42,6 @@ fn main() -> io::Result<()> {
             process::exit(1);
         }
         println!("processing in {}", target_dir);
-        
     } else {
         target_dir = ".".to_string();
         println!("processing in current dir");
@@ -53,7 +49,6 @@ fn main() -> io::Result<()> {
 
     println!("Start processing Datareon files");
 
-    
     // Step 1: Поиск файлов для обработки
     let files: Vec<PathBuf> = WalkDir::new(target_dir)
         .into_iter()
@@ -63,40 +58,49 @@ fn main() -> io::Result<()> {
         .map(|e| e.into_path())
         .collect();
 
-
     // Step 2: Сбор ID для замены
     let id_map: HashMap<String, String> = files
-    .par_iter()
-    .filter_map(|path| {
-        let content = fs::read_to_string(path).ok()?;
+        .par_iter()
+        .filter_map(|path| {
+            let content = fs::read_to_string(path).ok()?;
 
-        let entity_id = ENTITY_ID_PATTERN
-            .captures(&content)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().to_string())?;
+            let entity_id = ENTITY_ID_PATTERN
+                .captures(&content)
+                .and_then(|c| c.get(1))
+                .map(|m| m.as_str().to_string())?;
 
-        let object_name = build_object_name(path).ok()?;
+            let object_name = build_object_name(path).ok()?;
 
-        Some((entity_id, object_name))
-    }).collect();
+            Some((entity_id, object_name))
+        })
+        .collect();
 
     // Компилируем регулярные выражения один раз
     let patterns = Arc::new([
-        (Regex::new(r#""FolderId":\s*"[0-9a-f-]*""#).unwrap(), 
-         r#""FolderId": "00000000-0000-0000-0000-000000000000""#),
-        (Regex::new(r#""ClusterId":\s*"[0-9a-f-]*""#).unwrap(), 
-         r#""ClusterId": "00000000-0000-0000-0000-000000000000""#),
-        (Regex::new(r#""EntityId":\s*"[0-9a-f-]*""#).unwrap(), 
-         r#""EntityId": "00000000-0000-0000-0000-000000000000""#),
-        (Regex::new(r#""Version":\s*[0-9]+,"#).unwrap(), 
-         r#""Version": 0,"#),
-        (Regex::new(r#""X":\s*[-0-9]+"#).unwrap(), 
-         r#""X": 0"#),
-        (Regex::new(r#""Y":\s*[-0-9]+"#).unwrap(), 
-         r#""Y": 0"#),
+        (
+            Regex::new(r#""FolderId":\s*"[0-9a-f-]*""#).unwrap(),
+            r#""FolderId": "00000000-0000-0000-0000-000000000000""#,
+        ),
+        (
+            Regex::new(r#""ClusterId":\s*"[0-9a-f-]*""#).unwrap(),
+            r#""ClusterId": "00000000-0000-0000-0000-000000000000""#,
+        ),
+        (
+            Regex::new(r#""EntityId":\s*"[0-9a-f-]*""#).unwrap(),
+            r#""EntityId": "00000000-0000-0000-0000-000000000000""#,
+        ),
+        (
+            Regex::new(r#""Version":\s*[0-9]+,"#).unwrap(),
+            r#""Version": 0,"#,
+        ),
+        (Regex::new(r#""X":\s*[-0-9]+"#).unwrap(), r#""X": 0"#),
+        (Regex::new(r#""Y":\s*[-0-9]+"#).unwrap(), r#""Y": 0"#),
+        (
+            Regex::new(r#""Key":\s*"[0-9a-f-]*""#).unwrap(),
+            r#""FolderId": "00000000-0000-0000-0000-000000000000""#,
+        ),
     ]);
 
-    
     // Step 2: Обработка файлов
     files.par_iter().for_each(|path| {
         let patterns = Arc::clone(&patterns);
@@ -105,26 +109,34 @@ fn main() -> io::Result<()> {
         };
     });
 
-
-    println!("All is Done за {:.3} секунд", start_time.elapsed().as_secs_f64());
+    println!(
+        "All is Done за {:.3} секунд",
+        start_time.elapsed().as_secs_f64()
+    );
     Ok(())
 }
 
-fn chage_file_content(path: &Path, patterns: &[(Regex, &str)], id_map: &HashMap<String, String>) -> io::Result<()> {
+fn chage_file_content(
+    path: &Path,
+    patterns: &[(Regex, &str)],
+    id_map: &HashMap<String, String>,
+) -> io::Result<()> {
     let content = fs::read_to_string(path)?;
-    
+
     // Применяем все замены patterns
     let mut changed = false;
-    let  mut modified_content = content;
+    let mut modified_content = content;
 
     for (regex, replacement) in patterns {
-        let new_text = regex.replace_all(&modified_content, *replacement).to_string();
+        let new_text = regex
+            .replace_all(&modified_content, *replacement)
+            .to_string();
         if changed == false && new_text != modified_content {
             changed = true;
         };
         modified_content = new_text;
-    };
-    
+    }
+
     // JSON
     let mut json: Value = serde_json::from_str(&modified_content)?;
     if replace_ids(&mut json, &id_map)? {
@@ -141,10 +153,7 @@ fn chage_file_content(path: &Path, patterns: &[(Regex, &str)], id_map: &HashMap<
 }
 
 fn build_object_name(path: &Path) -> io::Result<String> {
-    let file_stem = path
-        .file_stem()
-        .and_then(|p| p.to_str())
-        .unwrap_or("");
+    let file_stem = path.file_stem().and_then(|p| p.to_str()).unwrap_or("");
 
     let parent = path
         .parent()
@@ -163,13 +172,15 @@ fn build_object_name(path: &Path) -> io::Result<String> {
         return Ok(format!("{}.{}", grandparent, file_stem));
     };
 
-    return Ok(format!("{}.{}", parent, file_stem))
+    return Ok(format!("{}.{}", parent, file_stem));
 }
 
 fn replace_ids(json: &mut Value, id_map: &HashMap<String, String>) -> io::Result<bool> {
     let mut modified = false;
 
-    if let Some(arr) = json.get_mut("RouteSystemDataTypes").and_then(|v| v.as_array_mut())
+    if let Some(arr) = json
+        .get_mut("RouteSystemDataTypes")
+        .and_then(|v| v.as_array_mut())
     {
         let mut ch_names = Vec::with_capacity(arr.len());
         for elem in arr.iter_mut() {
@@ -181,15 +192,12 @@ fn replace_ids(json: &mut Value, id_map: &HashMap<String, String>) -> io::Result
                     ch_names.push(old_id.to_string());
                 };
             };
-        };
+        }
 
         if modified {
             ch_names.sort_unstable();
 
-            *arr = ch_names
-                .into_iter()
-                .map(Value::String)
-                .collect();
+            *arr = ch_names.into_iter().map(Value::String).collect();
         };
     };
 
