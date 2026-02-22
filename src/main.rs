@@ -105,10 +105,10 @@ fn main() -> io::Result<()> {
         ),
     ]);
 
-    // Step 2: Обработка файлов
+    // Step 3: Обработка файлов
     files.par_iter().for_each(|path| {
         let patterns = Arc::clone(&patterns);
-        if let Err(e) = chage_file_content(path, &*patterns, &id_map) {
+        if let Err(e) = change_file_content(path, &*patterns, &id_map) {
             eprintln!("Error processing {:?}: {}", path, e);
         };
     });
@@ -120,7 +120,7 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-fn chage_file_content(
+fn change_file_content(
     path: &Path,
     patterns: &[(Regex, &str)],
     id_map: &HashMap<String, String>,
@@ -187,22 +187,24 @@ fn replace_ids(json: &mut Value, id_map: &HashMap<String, String>) -> io::Result
         .get_mut("RouteSystemDataTypes")
         .and_then(|v| v.as_array_mut())
     {
+        let mut el_modified = false;
         for elem in arr.iter_mut() {
             if let Some(old_id) = elem.as_str()
                 && let Some(new_id) = id_map.get(old_id)
             {
                 *elem = serde_json::Value::String(new_id.clone());
-                modified = true;
+                el_modified = true;
             };
         }
 
-        if modified {
+        if el_modified {
             arr.sort_by(|a, b| {
                 let a_id = a.as_str().unwrap_or("");
                 let b_id = b.as_str().unwrap_or("");
                 a_id.cmp(b_id)
             });
         };
+        modified = modified || el_modified;
     };
 
     // Step 2. Config.HandlersList
@@ -211,6 +213,7 @@ fn replace_ids(json: &mut Value, id_map: &HashMap<String, String>) -> io::Result
         .and_then(|v| v.get_mut("HandlersList"))
         .and_then(|v| v.as_array_mut())
     {
+        let mut el_modified = false;
         for handler in arr.iter_mut() {
             if let Some(handler_obj) = handler.as_object_mut()
                 && let Some(id_value) = handler_obj.get_mut("HandlerId")
@@ -218,11 +221,11 @@ fn replace_ids(json: &mut Value, id_map: &HashMap<String, String>) -> io::Result
                 && let Some(name) = id_map.get(id_str)
             {
                 *id_value = serde_json::Value::String(name.clone());
-                modified = true;
+                el_modified = true;
             };
         }
 
-        if modified {
+        if el_modified {
             arr.sort_by(|a, b| {
                 let a_id = a.get("HandlerId").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -231,6 +234,7 @@ fn replace_ids(json: &mut Value, id_map: &HashMap<String, String>) -> io::Result
                 a_id.cmp(b_id)
             });
         };
+        modified = modified || el_modified;
     };
 
     // Step 3. DataToPlatform.SystemMetadataId
