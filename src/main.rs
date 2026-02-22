@@ -177,7 +177,8 @@ fn build_object_name(path: &Path) -> io::Result<String> {
 
 fn replace_ids(json: &mut Value, id_map: &HashMap<String, String>) -> io::Result<bool> {
     let mut modified = false;
-
+    
+    // Step 1. RouteSystemDataTypes
     if let Some(arr) = json
         .get_mut("RouteSystemDataTypes")
         .and_then(|v| v.as_array_mut())
@@ -201,5 +202,40 @@ fn replace_ids(json: &mut Value, id_map: &HashMap<String, String>) -> io::Result
         };
     };
 
+    // Step 1. Config.HandlersList
+    if let Some(arr) = json
+        .get_mut("Config")
+        .and_then(|v| v.get_mut("HandlersList"))
+        .and_then(|v| v.as_array_mut())
+    {
+        for handler in arr.iter_mut() {
+            if let Some(handler_obj) = handler.as_object_mut() {
+                if let Some(id_value) = handler_obj.get_mut("HandlerId") {
+                    if let Some(id_str) = id_value.as_str() {
+                        if let Some(name) = id_map.get(id_str) {
+                            *id_value = serde_json::Value::String(name.clone());
+                            modified = true;
+                        }
+                    }
+                }
+            }
+        };
+
+        if modified {
+            arr.sort_by(|a, b| {
+                let a_id = a.get("HandlerId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                let b_id = b.get("HandlerId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                a_id.cmp(b_id)
+            });
+        };
+    };
+
     Ok(modified)
 }
+
