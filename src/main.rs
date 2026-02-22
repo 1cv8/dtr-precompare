@@ -181,20 +181,20 @@ fn build_object_name(path: &Path) -> io::Result<String> {
 
 fn replace_ids(json: &mut Value, id_map: &HashMap<String, String>) -> io::Result<bool> {
     let mut modified = false;
-    
+
     // Step 1. RouteSystemDataTypes
     if let Some(arr) = json
         .get_mut("RouteSystemDataTypes")
         .and_then(|v| v.as_array_mut())
     {
         for elem in arr.iter_mut() {
-            if let Some(old_id) = elem.as_str() {
-                if let Some(new_id) = id_map.get(old_id) {
-                    *elem = serde_json::Value::String(new_id.clone());
-                    modified = true;
-                };
+            if let Some(old_id) = elem.as_str()
+                && let Some(new_id) = id_map.get(old_id)
+            {
+                *elem = serde_json::Value::String(new_id.clone());
+                modified = true;
             };
-        };
+        }
 
         if modified {
             arr.sort_by(|a, b| {
@@ -212,27 +212,21 @@ fn replace_ids(json: &mut Value, id_map: &HashMap<String, String>) -> io::Result
         .and_then(|v| v.as_array_mut())
     {
         for handler in arr.iter_mut() {
-            if let Some(handler_obj) = handler.as_object_mut() {
-                if let Some(id_value) = handler_obj.get_mut("HandlerId") {
-                    if let Some(id_str) = id_value.as_str() {
-                        if let Some(name) = id_map.get(id_str) {
-                            *id_value = serde_json::Value::String(name.clone());
-                            modified = true;
-                        };
-                    };
-                };
+            if let Some(handler_obj) = handler.as_object_mut()
+                && let Some(id_value) = handler_obj.get_mut("HandlerId")
+                && let Some(id_str) = id_value.as_str()
+                && let Some(name) = id_map.get(id_str)
+            {
+                *id_value = serde_json::Value::String(name.clone());
+                modified = true;
             };
-        };
+        }
 
         if modified {
             arr.sort_by(|a, b| {
-                let a_id = a.get("HandlerId")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let a_id = a.get("HandlerId").and_then(|v| v.as_str()).unwrap_or("");
 
-                let b_id = b.get("HandlerId")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let b_id = b.get("HandlerId").and_then(|v| v.as_str()).unwrap_or("");
 
                 a_id.cmp(b_id)
             });
@@ -240,27 +234,26 @@ fn replace_ids(json: &mut Value, id_map: &HashMap<String, String>) -> io::Result
     };
 
     // Step 3. DataToPlatform.SystemMetadataId
-    if let Some(id_value) = json.get_mut("DataToPlatform").and_then(|v| v.get_mut("SystemMetadataId"))
+    if let Some(id_value) = json
+        .get_mut("DataToPlatform")
+        .and_then(|v| v.get_mut("SystemMetadataId"))
+        && let Some(id_str) = id_value.as_str()
+        && let Some(name) = id_map.get(id_str)
     {
-        if let Some(id_str) = id_value.as_str() {
-            if let Some(name) = id_map.get(id_str) {
-                *id_value = serde_json::Value::String(name.clone());
-                modified = true;
-            };
-        };
+        *id_value = serde_json::Value::String(name.clone());
+        modified = true;
     };
 
     // Step 4. DataFromPlatform.SystemMetadataId
-    if let Some(id_value) = json.get_mut("DataFromPlatform").and_then(|v| v.get_mut("SystemMetadataId"))
+    if let Some(id_value) = json
+        .get_mut("DataFromPlatform")
+        .and_then(|v| v.get_mut("SystemMetadataId"))
+        && let Some(id_str) = id_value.as_str()
+        && let Some(name) = id_map.get(id_str)
     {
-        if let Some(id_str) = id_value.as_str() {
-            if let Some(name) = id_map.get(id_str) {
-                *id_value = serde_json::Value::String(name.clone());
-                modified = true;
-            };
-        };
+        *id_value = serde_json::Value::String(name.clone());
+        modified = true;
     };
 
     Ok(modified)
 }
-
