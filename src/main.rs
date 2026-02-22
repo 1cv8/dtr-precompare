@@ -99,6 +99,10 @@ fn main() -> io::Result<()> {
             Regex::new(r#""Key":\s*"[0-9a-f-]*""#).unwrap(),
             r#""Key": "00000000-0000-0000-0000-000000000000""#,
         ),
+        (
+            Regex::new(r#""Id":\s*"[0-9a-f-]*""#).unwrap(),
+            r#""Id": "00000000-0000-0000-0000-000000000000""#,
+        ),
     ]);
 
     // Step 2: Обработка файлов
@@ -183,26 +187,25 @@ fn replace_ids(json: &mut Value, id_map: &HashMap<String, String>) -> io::Result
         .get_mut("RouteSystemDataTypes")
         .and_then(|v| v.as_array_mut())
     {
-        let mut ch_names = Vec::with_capacity(arr.len());
         for elem in arr.iter_mut() {
             if let Some(old_id) = elem.as_str() {
                 if let Some(new_id) = id_map.get(old_id) {
-                    ch_names.push(new_id.clone());
+                    *elem = serde_json::Value::String(new_id.clone());
                     modified = true;
-                } else {
-                    ch_names.push(old_id.to_string());
                 };
             };
-        }
+        };
 
         if modified {
-            ch_names.sort_unstable();
-
-            *arr = ch_names.into_iter().map(Value::String).collect();
+            arr.sort_by(|a, b| {
+                let a_id = a.as_str().unwrap_or("");
+                let b_id = b.as_str().unwrap_or("");
+                a_id.cmp(b_id)
+            });
         };
     };
 
-    // Step 1. Config.HandlersList
+    // Step 2. Config.HandlersList
     if let Some(arr) = json
         .get_mut("Config")
         .and_then(|v| v.get_mut("HandlersList"))
@@ -215,10 +218,10 @@ fn replace_ids(json: &mut Value, id_map: &HashMap<String, String>) -> io::Result
                         if let Some(name) = id_map.get(id_str) {
                             *id_value = serde_json::Value::String(name.clone());
                             modified = true;
-                        }
-                    }
-                }
-            }
+                        };
+                    };
+                };
+            };
         };
 
         if modified {
@@ -233,6 +236,28 @@ fn replace_ids(json: &mut Value, id_map: &HashMap<String, String>) -> io::Result
 
                 a_id.cmp(b_id)
             });
+        };
+    };
+
+    // Step 3. DataToPlatform.SystemMetadataId
+    if let Some(id_value) = json.get_mut("DataToPlatform").and_then(|v| v.get_mut("SystemMetadataId"))
+    {
+        if let Some(id_str) = id_value.as_str() {
+            if let Some(name) = id_map.get(id_str) {
+                *id_value = serde_json::Value::String(name.clone());
+                modified = true;
+            };
+        };
+    };
+
+    // Step 4. DataFromPlatform.SystemMetadataId
+    if let Some(id_value) = json.get_mut("DataFromPlatform").and_then(|v| v.get_mut("SystemMetadataId"))
+    {
+        if let Some(id_str) = id_value.as_str() {
+            if let Some(name) = id_map.get(id_str) {
+                *id_value = serde_json::Value::String(name.clone());
+                modified = true;
+            };
         };
     };
 
