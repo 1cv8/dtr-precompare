@@ -4,18 +4,61 @@ use regex::Regex;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+//use std::sync::Arc;
 use walkdir::WalkDir;
 
 use serde_json::Value;
 
 use std::collections::HashMap;
 
-pub fn run(target_dir: String) -> io::Result<()> {
-    static ENTITY_ID_PATTERN: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#""EntityId":\s*"([0-9a-f-]+)""#).unwrap());
+static ENTITY_ID_PATTERN: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#""EntityId":\s*"([0-9a-f-]+)""#).unwrap());
 
+struct ReplaceConfig {
+    pub combined_re: Regex,
+    pub patterns_reps: Vec<String>,
+}
+
+fn init_replace_config() -> ReplaceConfig {
+    let patterns_reg = [
+        r#""FolderId":\s*"[0-9a-f-]*""#,
+        r#""ClusterId":\s*"[0-9a-f-]*""#,
+        r#""EntityId":\s*"[0-9a-f-]*""#,
+        r#""Version":\s*[0-9]+,"#,
+        r#""X":\s*[-0-9]+"#,
+        r#""Y":\s*[-0-9]+"#,
+        r#""Key":\s*"[0-9a-f-]*""#,
+        r#""Id":\s*"[0-9a-f-]*""#,
+    ];
+    let patterns_reps = vec![
+        r#""FolderId": "00000000-0000-0000-0000-000000000000""#.to_string(),
+        r#""ClusterId": "00000000-0000-0000-0000-000000000000""#.to_string(),
+        r#""EntityId": "00000000-0000-0000-0000-000000000000""#.to_string(),
+        r#""Version": 0,"#.to_string(),
+        r#""X": 0"#.to_string(),
+        r#""Y": 0"#.to_string(),
+        r#""Key": "00000000-0000-0000-0000-000000000000""#.to_string(),
+        r#""Id": "00000000-0000-0000-0000-000000000000""#.to_string(),
+    ];
+
+    let combined_pattern: String = patterns_reg
+        .iter()
+        .enumerate()
+        .map(|(i, re_str)| format!("(?P<p{}>{})", i, re_str))
+        .collect::<Vec<_>>()
+        .join("|");
+    let combined_re = Regex::new(&combined_pattern).unwrap();
+
+    ReplaceConfig {
+        combined_re,
+        patterns_reps,
+    }
+}
+
+pub fn run(target_dir: String) -> io::Result<()> {
     println!("Start processing Datareon files");
+
+    let init_cfg = init_replace_config();
 
     // Step 1: Поиск файлов для обработки
     let files: Vec<PathBuf> = WalkDir::new(target_dir)
@@ -32,6 +75,7 @@ pub fn run(target_dir: String) -> io::Result<()> {
         .filter_map(|path| {
             let content = fs::read_to_string(path).ok()?;
 
+            //let entity_id = init_cfg.entity_id_pattern
             let entity_id = ENTITY_ID_PATTERN
                 .captures(&content)
                 .and_then(|c| c.get(1))
@@ -43,53 +87,9 @@ pub fn run(target_dir: String) -> io::Result<()> {
         })
         .collect();
 
-    // Компилируем регулярные выражения один раз
-    let _patterns = Arc::new([
-        (
-            Regex::new(r#""FolderId":\s*"[0-9a-f-]*""#).unwrap(),
-            r#""FolderId": "00000000-0000-0000-0000-000000000000""#,
-        ),
-        (
-            Regex::new(r#""ClusterId":\s*"[0-9a-f-]*""#).unwrap(),
-            r#""ClusterId": "00000000-0000-0000-0000-000000000000""#,
-        ),
-        (
-            Regex::new(r#""EntityId":\s*"[0-9a-f-]*""#).unwrap(),
-            r#""EntityId": "00000000-0000-0000-0000-000000000000""#,
-        ),
-        (
-            Regex::new(r#""Version":\s*[0-9]+,"#).unwrap(),
-            r#""Version": 0,"#,
-        ),
-        (Regex::new(r#""X":\s*[-0-9]+"#).unwrap(), r#""X": 0"#),
-        (Regex::new(r#""Y":\s*[-0-9]+"#).unwrap(), r#""Y": 0"#),
-        (
-            Regex::new(r#""Key":\s*"[0-9a-f-]*""#).unwrap(),
-            r#""Key": "00000000-0000-0000-0000-000000000000""#,
-        ),
-        (
-            Regex::new(r#""Id":\s*"[0-9a-f-]*""#).unwrap(),
-            r#""Id": "00000000-0000-0000-0000-000000000000""#,
-        ),
-    ]);
-
-    // Оптимизация Комбинированное выражение
-    let combined_pattern = _patterns
-        .iter()
-        .enumerate()
-        .map(|(i, (re, _))| format!("(?P<p{}>{})", i, re.as_str()))
-        .collect::<Vec<_>>()
-        .join("|");
-    let combined_re = Regex::new(&combined_pattern).unwrap();
-
-    let patterns_reps: Vec<String> = _patterns
-        .iter()
-        .map(|(_, rep)| rep.to_string())
-        .collect::<Vec<_>>();
-
     // Step 3: Обработка файлов
     files.par_iter().for_each(|path| {
-        if let Err(e) = change_file_content(path, &combined_re, &patterns_reps, &id_map) {
+        if let Err(e) = change_file_content(path, &init_cfg, &id_map) {
             eprintln!("Error processing {:?}: {}", path, e);
         };
     });
@@ -99,8 +99,7 @@ pub fn run(target_dir: String) -> io::Result<()> {
 
 fn change_file_content(
     path: &Path,
-    combined_re: &Regex,
-    patterns_reps: &Vec<String>,
+    init_cfg: &ReplaceConfig,
     id_map: &HashMap<String, String>,
 ) -> io::Result<()> {
     let content = fs::read_to_string(path)?;
@@ -109,9 +108,10 @@ fn change_file_content(
     let mut modified_content = content;
 
     // Применяем все замены patterns
-    let new_text = combined_re
+    let new_text = init_cfg
+        .combined_re
         .replace_all(&modified_content, |caps: &regex::Captures| {
-            for (i, rep_str) in patterns_reps.iter().enumerate() {
+            for (i, rep_str) in init_cfg.patterns_reps.iter().enumerate() {
                 let name = format!("p{}", i);
                 if caps.name(&name).is_some() {
                     return rep_str.clone();
