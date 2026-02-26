@@ -13,6 +13,8 @@ use std::collections::HashMap;
 
 static ENTITY_ID_PATTERN: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#""EntityId":\s*"([0-9a-f-]+)""#).unwrap());
+static SYSTEM_METADATA_ID_PATTERN: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#""SystemMetadataId":\s*"([0-9a-f-]*)""#).unwrap());
 
 struct ReplaceConfig {
     pub combined_re: Regex,
@@ -75,7 +77,6 @@ pub fn run(target_dir: String) -> io::Result<()> {
         .filter_map(|path| {
             let content = fs::read_to_string(path).ok()?;
 
-            //let entity_id = init_cfg.entity_id_pattern
             let entity_id = ENTITY_ID_PATTERN
                 .captures(&content)
                 .and_then(|c| c.get(1))
@@ -124,6 +125,21 @@ fn change_file_content(
         changed = true;
     };
     modified_content = new_text;
+
+    // SystemMetadataId
+    let new_text2 = SYSTEM_METADATA_ID_PATTERN.replace_all(&modified_content, |caps: &regex::Captures| {
+        let id_str: &str = &caps.get(1).map_or("", |m| m.as_str());
+        if let Some(name) = id_map.get(id_str) {
+            return format!(r#""SystemMetadataId": "{}""#, name);
+        }else{
+            return format!(r#""SystemMetadataId": "{}""#, id_str);
+        };
+    })
+    .to_string();
+    if !changed && new_text2 != modified_content {
+        changed = true;
+    };
+    modified_content = new_text2;
 
     // JSON
     let mut json: Value = serde_json::from_str(&modified_content)?;
@@ -219,28 +235,6 @@ fn replace_ids(json: &mut Value, id_map: &HashMap<String, String>) -> io::Result
             });
         };
         modified = modified || el_modified;
-    };
-
-    // Step 3. DataToPlatform.SystemMetadataId
-    if let Some(id_value) = json
-        .get_mut("DataToPlatform")
-        .and_then(|v| v.get_mut("SystemMetadataId"))
-        && let Some(id_str) = id_value.as_str()
-        && let Some(name) = id_map.get(id_str)
-    {
-        *id_value = serde_json::Value::String(name.clone());
-        modified = true;
-    };
-
-    // Step 4. DataFromPlatform.SystemMetadataId
-    if let Some(id_value) = json
-        .get_mut("DataFromPlatform")
-        .and_then(|v| v.get_mut("SystemMetadataId"))
-        && let Some(id_str) = id_value.as_str()
-        && let Some(name) = id_map.get(id_str)
-    {
-        *id_value = serde_json::Value::String(name.clone());
-        modified = true;
     };
 
     Ok(modified)
