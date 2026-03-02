@@ -58,7 +58,7 @@ fn init_replace_config() -> ReplaceConfig {
     }
 }
 
-pub fn run(target_dir: String) -> io::Result<()> {
+pub fn run(target_dir: &str) -> io::Result<()> {
     println!("Start processing Datareon files");
 
     let init_cfg = init_replace_config();

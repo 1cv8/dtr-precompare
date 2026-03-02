@@ -1,4 +1,3 @@
-use std::env;
 use std::io;
 use std::path::Path;
 use std::process;
@@ -6,36 +5,42 @@ use std::time::Instant;
 
 mod dtr_precompare;
 
+use clap::Parser;
+
+#[derive(Parser)]
+struct Args {
+    /// Целевой каталог
+    #[arg(short, long, value_name = "DIR", default_value = ".")]
+    target_dir: String,
+
+    /// Verbose mode
+    #[arg(short, long)]
+    verbose: bool,
+}
+
 fn main() -> io::Result<()> {
     let start_time = Instant::now();
 
-    // Получаем аргументы командной строки
-    let args: Vec<String> = env::args().collect();
+    let args = Args::parse();
 
-    // Определяем целевой каталог
-    let target_dir: String;
-    if args.len() > 1 {
-        target_dir = args[1].clone();
-
-        let path = Path::new(&target_dir);
+    // Проверяем аргументы командной строки
+    if args.target_dir != "." {
+        let path = Path::new(&args.target_dir);
         // Проверяем существование каталога
         if !path.exists() {
-            eprintln!("Ошибка: каталог '{}' не существует", target_dir);
+            eprintln!("Ошибка: каталог '{}' не существует", args.target_dir);
             process::exit(1);
         };
 
         // Проверяем, что это действительно каталог
         if !path.is_dir() {
-            eprintln!("Ошибка: '{}' не является каталогом", target_dir);
+            eprintln!("Ошибка: '{}' не является каталогом", args.target_dir);
             process::exit(1);
         }
-        println!("processing in {}", target_dir);
-    } else {
-        target_dir = ".".to_string();
-        println!("processing in current dir");
+        println!("processing in {}", args.target_dir);
     };
 
-    dtr_precompare::run(target_dir)?;
+    dtr_precompare::run(&args.target_dir)?;
 
     println!(
         "All is Done за {:.3} секунд",
