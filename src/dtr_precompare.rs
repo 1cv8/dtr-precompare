@@ -210,7 +210,6 @@ fn replace_ids(json: &mut Value, id_map: &HashMap<String, String>) -> io::Result
                 a_id.cmp(b_id)
             });
         };
-        //modified = modified || el_modified;
         modified |= el_modified;
     };
 
@@ -221,27 +220,33 @@ fn replace_ids(json: &mut Value, id_map: &HashMap<String, String>) -> io::Result
         .and_then(|v| v.as_array_mut())
     {
         let mut el_modified = false;
-        for handler in arr.iter_mut() {
+        let mut names: Vec<String> = Vec::with_capacity(arr.len());
+        for handler in arr.into_iter() {
             if let Some(handler_obj) = handler.as_object_mut()
                 && let Some(id_value) = handler_obj.get_mut("HandlerId")
                 && let Some(id_str) = id_value.as_str()
-                && let Some(name) = id_map.get(id_str)
             {
-                *id_value = serde_json::Value::String(name.clone());
+                let cur_name = if let Some(name) = id_map.get(id_str) {
+                    //el_modified = true;
+                    name.clone()
+                } else {
+                    id_str.to_string()
+                };
+                names.push(cur_name);
+
+                // сам факт преобразования объектов -> строки можно считать модификацией
                 el_modified = true;
             };
         }
 
         if el_modified {
-            arr.sort_unstable_by(|a, b| {
-                let a_id = a.get("HandlerId").and_then(|v| v.as_str()).unwrap_or("");
-
-                let b_id = b.get("HandlerId").and_then(|v| v.as_str()).unwrap_or("");
-
-                a_id.cmp(b_id)
-            });
+            names.sort_unstable();
+            // записываем обратно в json уже массив строк
+            *arr = names
+                .into_iter()
+                .map(serde_json::Value::String)
+                .collect::<Vec<_>>();
         };
-        //modified = modified || el_modified;
         modified |= el_modified;
     };
 
@@ -378,17 +383,13 @@ mod tests {
 
     #[test]
     fn json_handlers_list_replaced_and_sorted_and_prettified() {
-        // Step: JSON replace_ids -> Config.HandlersList (замена + сортировка)
+        // Step: JSON replace_ids -> Config.HandlersList (замена + сортировка + упрощение структуры)
         let input = r#"{"Config":{"HandlersList":[{"HandlerId":"b"},{"HandlerId":"a"}]}}"#;
         let expected = r#"{
   "Config": {
     "HandlersList": [
-      {
-        "HandlerId": "AName"
-      },
-      {
-        "HandlerId": "BName"
-      }
+      "AName",
+      "BName"
     ]
   }
 }"#;
